@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from time import perf_counter
 
 from anthropic import Anthropic
+from autobatcher import BatchOpenAI
 from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
@@ -37,13 +39,20 @@ class BaseModelClient:
         raise NotImplementedError
 
 
-class OpenAIModelClient(BaseModelClient):
-    def __init__(self, spec: ModelSpec, max_output_tokens: int, temperature: float) -> None:
+class OpenAICompatibleModelClient(BaseModelClient):
+    def __init__(
+        self,
+        spec: ModelSpec,
+        max_output_tokens: int,
+        temperature: float,
+        api_key_env_var: str,
+        base_url: str | None = None,
+    ) -> None:
         super().__init__(spec, max_output_tokens, temperature)
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = os.getenv(api_key_env_var)
         if not api_key:
-            raise ValueError("OPENAI_API_KEY is required to use OpenAI models.")
-        self.client = OpenAI(api_key=api_key)
+            raise ValueError(f"{api_key_env_var} is required to use {spec.provider} models.")
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
 
     def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
         started = perf_counter()
@@ -55,6 +64,60 @@ class OpenAIModelClient(BaseModelClient):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+        )
+        latency_seconds = perf_counter() - started
+        message = response.choices[0].message
+        usage = response.usage
+        return ModelResponse(
+            text=(message.content or "").strip(),
+            latency_seconds=latency_seconds,
+            usage={
+                "input_tokens": getattr(usage, "prompt_tokens", None),
+                "output_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            },
+            raw_model_name=getattr(response, "model", None),
+            response_id=getattr(response, "id", None),
+            finish_reason=getattr(response.choices[0], "finish_reason", None),
+        )
+
+
+class OpenAIModelClient(OpenAICompatibleModelClient):
+    def __init__(self, spec: ModelSpec, max_output_tokens: int, temperature: float) -> None:
+        super().__init__(
+            spec,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            api_key_env_var="OPENAI_API_KEY",
+        )
+
+
+class DoublewordModelClient(OpenAICompatibleModelClient):
+    def __init__(self, spec: ModelSpec, max_output_tokens: int, temperature: float) -> None:
+        BaseModelClient.__init__(self, spec, max_output_tokens, temperature)
+        api_key = os.getenv("DOUBLEWORD_API_KEY")
+        if not api_key:
+            raise ValueError("DOUBLEWORD_API_KEY is required to use doubleword models.")
+        self.client = BatchOpenAI(
+            api_key=api_key,
+            base_url="https://api.doubleword.ai/v1",
+            batch_window_seconds=1.0,
+            poll_interval_seconds=5.0,
+            completion_window="1h",
+        )
+
+    def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
+        started = perf_counter()
+        response = asyncio.run(
+            self.client.chat.completions.create(
+                model=self.spec.model,
+                temperature=self.temperature,
+                max_completion_tokens=self.max_output_tokens,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
         )
         latency_seconds = perf_counter() - started
         message = response.choices[0].message
@@ -160,6 +223,8 @@ def build_model_client(
         return AnthropicModelClient(spec, max_output_tokens=max_output_tokens, temperature=temperature)
     if spec.provider == "gemini":
         return GeminiModelClient(spec, max_output_tokens=max_output_tokens, temperature=temperature)
+    if spec.provider == "doubleword":
+        return DoublewordModelClient(spec, max_output_tokens=max_output_tokens, temperature=temperature)
     raise ValueError(f"Unsupported provider '{spec.provider}'.")
 
 

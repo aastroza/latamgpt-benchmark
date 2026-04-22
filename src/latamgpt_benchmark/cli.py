@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from latamgpt_benchmark.config import (
     DEFAULT_JUDGE_MODEL,
     DEFAULT_JUDGE_PROMPT,
@@ -13,12 +15,13 @@ from latamgpt_benchmark.config import (
 )
 from latamgpt_benchmark.datasets import resolve_datasets
 from latamgpt_benchmark.evaluator import run_benchmark
+from latamgpt_benchmark.model_suites import available_suite_names, resolve_model_list
 from latamgpt_benchmark.utils import utc_timestamp
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Evaluate CHOCLO and Trueque with OpenAI, Anthropic, Gemini, and Weave."
+        description="Evaluate CHOCLO and Trueque with OpenAI, Anthropic, Gemini, Doubleword, and Weave."
     )
     parser.add_argument(
         "--dataset",
@@ -31,6 +34,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="models",
         action="append",
         help="Model spec in provider:model-id format. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--model-suite",
+        dest="model_suites",
+        action="append",
+        help=(
+            "Named model suite to expand into multiple --model values. "
+            f"Available: {', '.join(available_suite_names())}."
+        ),
     )
     parser.add_argument(
         "--judge-model",
@@ -74,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    load_dotenv()
 
     weave_project = args.weave_project
     if not weave_project:
@@ -84,7 +97,11 @@ def main() -> None:
         raise ValueError("Set --weave-project or WEAVE_PROJECT in the environment.")
 
     datasets = resolve_datasets(args.datasets or ["all"])
-    models = [ModelSpec.parse(value) for value in (args.models or DEFAULT_MODELS)]
+    model_values = resolve_model_list(
+        model_names=args.models or DEFAULT_MODELS,
+        suite_names=args.model_suites or [],
+    )
+    models = [ModelSpec.parse(value) for value in model_values]
 
     judge_model = None
     if not args.disable_judge:

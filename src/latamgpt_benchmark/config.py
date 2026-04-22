@@ -45,6 +45,7 @@ DEFAULT_MODELS = [
     "openai:gpt-5.4-mini",
     "anthropic:claude-sonnet-4-6",
     "gemini:gemini-2.5-flash",
+    "doubleword:Qwen/Qwen3.6-35B-A3B-FP8",
 ]
 
 DEFAULT_JUDGE_MODEL = "openai:gpt-5.4-mini"
@@ -71,9 +72,10 @@ class ModelSpec:
                 f"Invalid model spec '{value}'. Expected format 'provider:model-id'."
             )
         normalized_provider = provider.strip().lower()
-        if normalized_provider not in {"openai", "anthropic", "gemini"}:
+        if normalized_provider not in {"openai", "anthropic", "gemini", "doubleword"}:
             raise ValueError(
-                f"Unsupported provider '{normalized_provider}'. Use openai, anthropic, or gemini."
+                "Unsupported provider "
+                f"'{normalized_provider}'. Use openai, anthropic, gemini, or doubleword."
             )
         return cls(provider=normalized_provider, model=model.strip())
 
