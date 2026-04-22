@@ -7,7 +7,7 @@ def test_resolve_model_list_expands_suite() -> None:
         "openai:gpt-5.4",
         "anthropic:claude-opus-4-7",
         "gemini:gemini-2.5-pro",
-        "doubleword:Qwen/Qwen3.5-397B-A17B",
+        "doubleword:Qwen/Qwen3.5-397B-A17B-FP8",
     ]
 
 

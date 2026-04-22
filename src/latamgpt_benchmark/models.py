@@ -146,13 +146,15 @@ class AnthropicModelClient(BaseModelClient):
 
     def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
         started = perf_counter()
-        response = self.client.messages.create(
-            model=self.spec.model,
-            system=system_prompt,
-            max_tokens=self.max_output_tokens,
-            temperature=self.temperature,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        request = {
+            "model": self.spec.model,
+            "system": system_prompt,
+            "max_tokens": self.max_output_tokens,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        if self.temperature != 0.0:
+            request["temperature"] = self.temperature
+        response = self.client.messages.create(**request)
         latency_seconds = perf_counter() - started
         text_blocks = [block.text for block in response.content if getattr(block, "type", None) == "text"]
         usage = response.usage

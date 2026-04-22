@@ -20,7 +20,7 @@ MODEL_SUITES = {
             "openai:gpt-5.4",
             "anthropic:claude-opus-4-7",
             "gemini:gemini-2.5-pro",
-            "doubleword:Qwen/Qwen3.5-397B-A17B",
+            "doubleword:Qwen/Qwen3.5-397B-A17B-FP8",
         ),
     ),
     "current-recommended": ModelSuite(
@@ -40,7 +40,7 @@ MODEL_SUITES = {
             "gemini:gemini-2.5-pro",
             "gemini:gemini-2.5-flash",
             "gemini:gemini-2.5-flash-lite",
-            "doubleword:Qwen/Qwen3.5-397B-A17B",
+            "doubleword:Qwen/Qwen3.5-397B-A17B-FP8",
             "doubleword:Qwen/Qwen3.6-35B-A3B-FP8",
             "doubleword:google/gemma-4-31B-it",
             "doubleword:openai/gpt-oss-20b",

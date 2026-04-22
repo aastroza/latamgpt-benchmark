@@ -31,6 +31,7 @@ dev = [
 
 [project.scripts]
 latamgpt-benchmark = "latamgpt_benchmark.cli:main"
+latamgpt-judge-only = "latamgpt_benchmark.judge_only:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/latamgpt_benchmark"]
