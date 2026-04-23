@@ -97,11 +97,12 @@ uv run latamgpt-benchmark collect --run-dir runs/<run-name> --wait
 The practical OpenAI mapping used here is:
 
 - `GPT-3.5 Turbo` -> `openai:gpt-4.1-mini`
-- `GPT-5 Mini` -> `openai:gpt-5-mini`
+- current flagship addition -> `openai:gpt-5.4`
 
-The model we are no longer carrying in the default OpenAI suite is:
+The models we are no longer carrying in the default OpenAI suite are:
 
 - `GPT-4o Mini`
+- `GPT-5 Mini`
 
 Important caveat:
 

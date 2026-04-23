@@ -5,7 +5,7 @@ def test_resolve_model_list_expands_suite() -> None:
     models = resolve_model_list([], ["benchmark-default"])
     assert models == [
         "openai:gpt-4.1-mini",
-        "openai:gpt-5-mini",
+        "openai:gpt-5.4",
         "openai:gpt-5-nano",
         "doubleword:Qwen/Qwen3.5-4B",
         "doubleword:google/gemma-4-31B-it",

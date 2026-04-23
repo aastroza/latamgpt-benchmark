@@ -8,7 +8,7 @@ Batch-first evaluation pipeline for [`latam-gpt/CHOCLO`](https://huggingface.co/
 - Benchmark inference is now asynchronous and batch-based.
 - Judging is a separate second batch stage.
 - The default OpenAI list follows the OpenAI lineage already used in CHOCLO, updated with current replacements where applicable.
-- The default OpenAI list is a conservative current set: `gpt-4.1-mini`, `gpt-5-mini`, `gpt-5-nano`.
+- The default OpenAI list is a conservative current set: `gpt-4.1-mini`, `gpt-5.4`, `gpt-5-nano`.
 - The default Doubleword list keeps one Qwen and adds Gemma plus GPT-OSS.
 
 ## Model Selection
@@ -18,7 +18,7 @@ Source rationale lives in [`docs/model-selection-2026-04-22.md`](docs/model-sele
 Current default suite:
 
 - `openai:gpt-4.1-mini`
-- `openai:gpt-5-mini`
+- `openai:gpt-5.4`
 - `openai:gpt-5-nano`
 - `doubleword:Qwen/Qwen3.5-4B`
 - `doubleword:google/gemma-4-31B-it`

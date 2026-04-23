@@ -8,7 +8,7 @@ This document records the model choices now encoded in the repository after narr
 
 The benchmark now follows two simple rules:
 
-- For OpenAI, use a conservative set of current small models and avoid `gpt-4o-mini` in the default suite.
+- For OpenAI, avoid the GPT models already reported in CHOCLO and include one current flagship.
 - For Doubleword, keep one Qwen and add Gemma plus GPT-OSS.
 
 ## Dataset-Sourced Model Lineage
@@ -45,29 +45,26 @@ The replacement we use directly from that page is:
 
 - `gpt-3.5-turbo-0125` -> `gpt-4.1-mini`
 
-The other CHOCLO-linked model we keep directly is:
+The GPT models already reported on the CHOCLO card are:
 
+- `gpt-3.5-turbo`
+- `gpt-4o-mini`
 - `gpt-5-mini`
 
-The model we intentionally drop from the default suite is:
+We intentionally do not carry `gpt-4o-mini` or `gpt-5-mini` in the current default suite.
 
-- `gpt-4o-mini`
-
-Why:
-
-- `gpt-4o-mini` is still active in OpenAI's current models list, but we are choosing a stricter small-model lineup rather than keeping it for historical continuity.
-- `gpt-5-nano` gives us a cheaper current small-model tier.
+For the flagship replacement, OpenAI's current model docs say: "If you're not sure where to start, use `gpt-5.4`, our flagship model for complex reasoning and coding."
 
 Selected OpenAI models:
 
 - `openai:gpt-4.1-mini`
-- `openai:gpt-5-mini`
+- `openai:gpt-5.4`
 - `openai:gpt-5-nano`
 
 Why:
 
 - `gpt-4.1-mini` is the explicit OpenAI replacement for the deprecated GPT-3.5 Turbo lineage on the deprecations page.
-- `gpt-5-mini` preserves continuity with the CHOCLO-reported lineup while keeping the benchmark on a current smaller GPT-5 variant.
+- `gpt-5.4` is the current OpenAI flagship according to the official models guide.
 - `gpt-5-nano` provides the cheapest current OpenAI tier in the benchmark set.
 
 Default judge model:

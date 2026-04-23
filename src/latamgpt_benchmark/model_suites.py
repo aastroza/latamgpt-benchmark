@@ -14,11 +14,11 @@ class ModelSuite:
 MODEL_SUITES = {
     "benchmark-default": ModelSuite(
         name="benchmark-default",
-        description="Conservative small OpenAI set plus one Qwen, Gemma, and GPT-OSS on Doubleword.",
+        description="OpenAI conservative set with a flagship plus one Qwen, Gemma, and GPT-OSS.",
         reviewed_on="2026-04-22",
         models=(
             "openai:gpt-4.1-mini",
-            "openai:gpt-5-mini",
+            "openai:gpt-5.4",
             "openai:gpt-5-nano",
             "doubleword:Qwen/Qwen3.5-4B",
             "doubleword:google/gemma-4-31B-it",
@@ -27,11 +27,11 @@ MODEL_SUITES = {
     ),
     "openai-conservative": ModelSuite(
         name="openai-conservative",
-        description="Current small OpenAI benchmark set without GPT-4o-mini.",
+        description="Current OpenAI benchmark set without the GPT models already reported by CHOCLO.",
         reviewed_on="2026-04-22",
         models=(
             "openai:gpt-4.1-mini",
-            "openai:gpt-5-mini",
+            "openai:gpt-5.4",
             "openai:gpt-5-nano",
         ),
     ),
