@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -8,23 +9,34 @@ import weave
 from dotenv import load_dotenv
 from weave import EvaluationLogger
 
+from latamgpt_benchmark.batching import (
+    all_batches_completed,
+    chunk_list,
+    format_registry_summary,
+    jsonl_to_dict,
+    refresh_batch_registry,
+)
 from latamgpt_benchmark.config import BenchmarkConfig, ModelSpec
 from latamgpt_benchmark.datasets import (
     BenchmarkExample,
     load_benchmark_examples,
     published_dataset_name,
 )
-from latamgpt_benchmark.judge import JudgeResult, run_judge
-from latamgpt_benchmark.models import BaseModelClient, build_model_client
+from latamgpt_benchmark.models import build_batch_client, parse_batch_output_row
 from latamgpt_benchmark.scoring import deterministic_scores, summarize_results
-from latamgpt_benchmark.utils import append_jsonl, ensure_directory, git_commit_hash, read_jsonl, write_json
+from latamgpt_benchmark.utils import (
+    append_jsonl,
+    ensure_directory,
+    git_commit_hash,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
 
 
-def run_benchmark(config: BenchmarkConfig) -> Path:
+def submit_answer_batches(config: BenchmarkConfig) -> Path:
     load_dotenv()
-    if not os.getenv("WANDB_API_KEY"):
-        raise ValueError("WANDB_API_KEY is required to log results to Weave.")
-
     run_dir = ensure_directory(config.output_dir / config.run_name)
     write_json(
         run_dir / "config.json",
@@ -34,20 +46,12 @@ def run_benchmark(config: BenchmarkConfig) -> Path:
         },
     )
 
-    weave.init(config.weave_project)
+    snapshots_dir = ensure_directory(run_dir / "dataset_snapshots")
+    batch_inputs_dir = ensure_directory(run_dir / "batch_inputs" / "answers")
+    manifests_dir = ensure_directory(run_dir / "batch_manifests" / "answers")
 
-    all_summaries: dict[str, Any] = {}
+    snapshot_examples: dict[str, list[BenchmarkExample]] = {}
     hf_token = os.getenv("HF_TOKEN")
-    judge_client = (
-        build_model_client(
-            config.judge_model,
-            max_output_tokens=config.judge_max_output_tokens,
-            temperature=config.temperature,
-        )
-        if config.judge_model
-        else None
-    )
-
     for dataset_name in config.datasets:
         examples = load_benchmark_examples(
             dataset_name=dataset_name,
@@ -59,148 +63,280 @@ def run_benchmark(config: BenchmarkConfig) -> Path:
             shard_index=config.shard_index,
             hf_token=hf_token,
         )
-        _publish_dataset_subset(config=config, dataset_name=dataset_name, examples=examples)
+        snapshot_examples[dataset_name] = examples
+        write_jsonl(
+            snapshots_dir / f"{dataset_name}.jsonl",
+            [example.to_weave_row() for example in examples],
+        )
 
-        for model_spec in config.models:
-            model_client = build_model_client(
-                model_spec,
-                max_output_tokens=config.max_output_tokens,
-                temperature=config.temperature,
-            )
-            pair_summary = _run_single_evaluation(
-                config=config,
-                dataset_name=dataset_name,
-                examples=examples,
-                model_spec=model_spec,
-                model_client=model_client,
-                judge_client=judge_client,
-                run_dir=run_dir,
-            )
-            key = f"{dataset_name}__{model_spec.slug}"
-            all_summaries[key] = pair_summary
+    batches: list[dict[str, Any]] = []
+    for model_spec in config.models:
+        client = build_batch_client(model_spec)
+        request_rows: list[dict[str, Any]] = []
+        manifest_rows: list[dict[str, Any]] = []
+        for dataset_name in config.datasets:
+            for example in snapshot_examples[dataset_name]:
+                custom_id = f"r{len(request_rows):07d}"
+                request_rows.append(
+                    {
+                        "custom_id": custom_id,
+                        "method": "POST",
+                        "url": "/v1/chat/completions",
+                        "body": client.build_request_body(
+                            system_prompt=config.system_prompt,
+                            user_prompt=example.question,
+                            max_output_tokens=config.max_output_tokens,
+                            temperature=config.temperature,
+                        ),
+                    }
+                )
+                manifest_rows.append(
+                    {
+                        "custom_id": custom_id,
+                        "example_id": example.uid,
+                        "dataset_name": example.dataset_name,
+                        "split": example.split,
+                        "row_id": example.row_id,
+                        "question": example.question,
+                        "reference_answer": example.reference_answer,
+                        "metadata": example.metadata,
+                        "provider": model_spec.provider,
+                        "model": model_spec.model,
+                        "model_name": model_spec.name,
+                    }
+                )
 
-    write_json(run_dir / "run_summary.json", all_summaries)
+        for part_index, chunk in enumerate(chunk_list(request_rows, config.max_requests_per_batch)):
+            chunk_manifest = manifest_rows[
+                part_index * config.max_requests_per_batch : (part_index + 1) * config.max_requests_per_batch
+            ]
+            batch_name = f"answers__{model_spec.slug}__part-{part_index:03d}"
+            batch_input_path = batch_inputs_dir / f"{batch_name}.jsonl"
+            manifest_path = manifests_dir / f"{batch_name}.jsonl"
+            write_jsonl(batch_input_path, chunk)
+            write_jsonl(manifest_path, chunk_manifest)
+
+            input_file_id = client.upload_batch_file(str(batch_input_path))
+            batch_info = client.create_batch(
+                input_file_id=input_file_id,
+                completion_window=config.answer_completion_window,
+                metadata={
+                    "stage": "answers",
+                    "run_name": config.run_name,
+                    "batch_name": batch_name,
+                },
+            )
+            batches.append(
+                {
+                    "batch_name": batch_name,
+                    "provider": model_spec.provider,
+                    "model": model_spec.model,
+                    "model_name": model_spec.name,
+                    "input_path": str(batch_input_path),
+                    "manifest_path": str(manifest_path),
+                    "input_file_id": input_file_id,
+                    "batch_id": batch_info.batch_id,
+                    "status": batch_info.status,
+                    "output_file_id": batch_info.output_file_id,
+                    "error_file_id": batch_info.error_file_id,
+                    "request_counts": batch_info.request_counts,
+                    "request_count": len(chunk),
+                    }
+                )
+
+    if not batches:
+        raise ValueError("No answer batches were created. Check dataset selection and sample limits.")
+
+    registry = {
+        "stage": "answers",
+        "run_name": config.run_name,
+        "run_dir": str(run_dir),
+        "batches": batches,
+    }
+    write_json(run_dir / "answers_batches.json", registry)
     return run_dir
 
 
-def _run_single_evaluation(
-    config: BenchmarkConfig,
-    dataset_name: str,
-    examples: list[BenchmarkExample],
-    model_spec: ModelSpec,
-    model_client: BaseModelClient,
-    judge_client: BaseModelClient | None,
+def refresh_answer_batches(
     run_dir: Path,
+    wait: bool = False,
+    poll_interval_seconds: int = 300,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
-    result_path = run_dir / f"{dataset_name}__{model_spec.slug}.jsonl"
-    summary_path = run_dir / f"{dataset_name}__{model_spec.slug}.summary.json"
-    evaluation_name = f"{config.run_name}-{dataset_name}-{model_spec.slug}"
-    eval_logger = EvaluationLogger(
-        name=evaluation_name,
-        model=model_spec.name,
-        dataset=dataset_name,
+    return refresh_batch_registry(
+        run_dir / "answers_batches.json",
+        wait=wait,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout_seconds=timeout_seconds,
     )
 
-    for example in examples:
-        model_response = model_client.generate(
-            system_prompt=config.system_prompt,
-            user_prompt=example.question,
+
+def collect_answer_batches(
+    run_dir: Path,
+    wait: bool = False,
+    poll_interval_seconds: int = 300,
+    timeout_seconds: int | None = None,
+) -> Path:
+    registry = refresh_answer_batches(
+        run_dir,
+        wait=wait,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout_seconds=timeout_seconds,
+    )
+    if not all_batches_completed(registry):
+        raise ValueError(
+            "Not all answer batches are completed.\n"
+            f"{format_registry_summary(registry)}"
         )
-        metrics = deterministic_scores(
-            reference=example.reference_answer,
-            prediction=model_response.text,
-        )
-        judge_result = None
-        if judge_client is not None:
-            judge_result = run_judge(
-                judge_client=judge_client,
-                judge_prompt=config.judge_prompt,
-                question=example.question,
-                reference_answer=example.reference_answer,
-                model_answer=model_response.text,
+
+    config = BenchmarkConfig.from_dict(read_json(run_dir / "config.json"))
+    batch_outputs_dir = ensure_directory(run_dir / "batch_outputs" / "answers")
+
+    results_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for batch in registry["batches"]:
+        output_file_id = batch.get("output_file_id")
+        if not output_file_id:
+            raise ValueError(f"Batch {batch['batch_name']} did not produce an output file.")
+        output_path = batch_outputs_dir / f"{batch['batch_name']}.jsonl"
+        downloaded = build_batch_client(
+            ModelSpec(provider=batch["provider"], model=batch["model"])
+        ).download_output_file(output_file_id)
+        output_path.write_text(downloaded.text, encoding="utf-8")
+
+        manifest_rows = jsonl_to_dict(Path(batch["manifest_path"]), "custom_id")
+        output_rows = jsonl_to_dict(output_path, "custom_id")
+        if set(manifest_rows) != set(output_rows):
+            raise ValueError(f"Output mismatch for batch {batch['batch_name']}.")
+
+        for custom_id in manifest_rows:
+            manifest_row = manifest_rows[custom_id]
+            response_row = parse_batch_output_row(output_rows[custom_id])
+            metrics = deterministic_scores(
+                reference=manifest_row["reference_answer"],
+                prediction=response_row["text"],
             )
-            metrics.update(judge_result.metrics())
+            results_by_key[(manifest_row["dataset_name"], manifest_row["model_name"])].append(
+                {
+                    "example_id": manifest_row["example_id"],
+                    "dataset_name": manifest_row["dataset_name"],
+                    "question": manifest_row["question"],
+                    "reference_answer": manifest_row["reference_answer"],
+                    "metadata": manifest_row["metadata"],
+                    "provider": manifest_row["provider"],
+                    "model": manifest_row["model_name"],
+                    "prediction": response_row["text"],
+                    "latency_seconds": None,
+                    "usage": response_row["usage"],
+                    "metrics": metrics,
+                    "judge": None,
+                    "judge_usage": {},
+                    "response_id": response_row["response_id"],
+                    "finish_reason": response_row["finish_reason"],
+                    "raw_model_name": response_row["raw_model_name"],
+                }
+            )
 
-        pred = eval_logger.log_prediction(
-            example.to_weave_row(),
-            {
-                "answer": model_response.text,
-                "provider": model_spec.provider,
-                "model": model_spec.model,
-                "latency_seconds": model_response.latency_seconds,
-                "usage": model_response.usage,
-                "response_id": model_response.response_id,
-                "finish_reason": model_response.finish_reason,
-                "raw_model_name": model_response.raw_model_name,
-                "judge": _judge_payload(judge_result),
-            },
+    _write_answer_outputs(run_dir, config, results_by_key)
+    return run_dir
+
+
+def _write_answer_outputs(
+    run_dir: Path,
+    config: BenchmarkConfig,
+    results_by_key: dict[tuple[str, str], list[dict[str, Any]]],
+) -> None:
+    all_summaries: dict[str, Any] = {}
+    snapshots = _load_snapshot_rows(run_dir)
+    _maybe_publish_to_weave(config, snapshots, results_by_key)
+
+    for (dataset_name, model_name), rows in sorted(results_by_key.items()):
+        model_spec = ModelSpec.parse(model_name)
+        result_path = run_dir / f"{dataset_name}__{model_spec.slug}.jsonl"
+        summary_path = run_dir / f"{dataset_name}__{model_spec.slug}.summary.json"
+        result_path.write_text("", encoding="utf-8")
+        for row in rows:
+            append_jsonl(result_path, row)
+        summary = summarize_results(rows)
+        summary["dataset_name"] = dataset_name
+        summary["model"] = model_name
+        summary["evaluation_name"] = f"{config.run_name}-{dataset_name}-{model_spec.slug}"
+        write_json(summary_path, summary)
+        all_summaries[f"{dataset_name}__{model_spec.slug}"] = summary
+
+    write_json(run_dir / "run_summary.json", all_summaries)
+
+
+def _load_snapshot_rows(run_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    snapshots: dict[str, list[dict[str, Any]]] = {}
+    for snapshot_file in sorted((run_dir / "dataset_snapshots").glob("*.jsonl")):
+        snapshots[snapshot_file.stem] = read_jsonl(snapshot_file)
+    return snapshots
+
+
+def _maybe_publish_to_weave(
+    config: BenchmarkConfig,
+    snapshots: dict[str, list[dict[str, Any]]],
+    results_by_key: dict[tuple[str, str], list[dict[str, Any]]],
+) -> None:
+    if not config.weave_project:
+        return
+    load_dotenv()
+    if not os.getenv("WANDB_API_KEY"):
+        raise ValueError("WANDB_API_KEY is required to log results to Weave.")
+
+    weave.init(config.weave_project)
+    for dataset_name, rows in snapshots.items():
+        _publish_dataset_subset(config=config, dataset_name=dataset_name, rows=rows)
+
+    for (dataset_name, model_name), rows in sorted(results_by_key.items()):
+        model_spec = ModelSpec.parse(model_name)
+        evaluation_name = f"{config.run_name}-{dataset_name}-{model_spec.slug}"
+        eval_logger = EvaluationLogger(
+            name=evaluation_name,
+            model=model_name,
+            dataset=dataset_name,
         )
-        for metric_name, metric_value in metrics.items():
-            pred.log_score(metric_name, metric_value)
-        pred.finish()
-
-        append_jsonl(
-            result_path,
-            {
-                "example_id": example.uid,
-                "dataset_name": example.dataset_name,
-                "question": example.question,
-                "reference_answer": example.reference_answer,
-                "metadata": example.metadata,
-                "model": model_spec.name,
-                "prediction": model_response.text,
-                "latency_seconds": model_response.latency_seconds,
-                "usage": model_response.usage,
-                "metrics": metrics,
-                "judge": _judge_payload(judge_result),
-                "judge_usage": judge_result.usage if judge_result else {},
-            },
-        )
-
-    results = read_jsonl(result_path)
-    summary = summarize_results(results)
-    summary["dataset_name"] = dataset_name
-    summary["model"] = model_spec.name
-    summary["evaluation_name"] = evaluation_name
-    eval_logger.log_summary(summary)
-    write_json(summary_path, summary)
-    return summary
+        snapshot_by_id = {row["uid"]: row for row in snapshots[dataset_name]}
+        for row in rows:
+            source_row = snapshot_by_id[row["example_id"]]
+            pred = eval_logger.log_prediction(
+                source_row,
+                {
+                    "answer": row["prediction"],
+                    "provider": model_spec.provider,
+                    "model": model_spec.model,
+                    "latency_seconds": row["latency_seconds"],
+                    "usage": row["usage"],
+                    "response_id": row["response_id"],
+                    "finish_reason": row["finish_reason"],
+                    "raw_model_name": row["raw_model_name"],
+                    "judge": row["judge"],
+                },
+            )
+            for metric_name, metric_value in row["metrics"].items():
+                pred.log_score(metric_name, metric_value)
+            pred.finish()
+        summary = summarize_results(rows)
+        summary["dataset_name"] = dataset_name
+        summary["model"] = model_name
+        summary["evaluation_name"] = evaluation_name
+        eval_logger.log_summary(summary)
 
 
 def _publish_dataset_subset(
     config: BenchmarkConfig,
     dataset_name: str,
-    examples: list[BenchmarkExample],
+    rows: list[dict[str, Any]],
 ) -> None:
-    if not examples:
+    if not rows:
         return
     dataset_name_for_weave = published_dataset_name(
         dataset_name=dataset_name,
         split=config.split,
-        sample_count=len(examples),
+        sample_count=len(rows),
         shuffle=config.shuffle,
         seed=config.seed,
         num_shards=config.num_shards,
         shard_index=config.shard_index,
     )
-    weave.publish(
-        weave.Dataset(
-            name=dataset_name_for_weave,
-            rows=[example.to_weave_row() for example in examples],
-        )
-    )
-
-
-def _judge_payload(judge_result: JudgeResult | None) -> dict[str, Any] | None:
-    if judge_result is None:
-        return None
-    return {
-        "correctness_score": judge_result.correctness_score,
-        "completeness_score": judge_result.completeness_score,
-        "uncertainty_handling_score": judge_result.uncertainty_handling_score,
-        "overall_score": judge_result.overall_score,
-        "verdict": judge_result.verdict,
-        "justification": judge_result.justification,
-        "raw_response_text": judge_result.raw_response_text,
-        "usage": judge_result.usage,
-    }
+    weave.publish(weave.Dataset(name=dataset_name_for_weave, rows=rows))

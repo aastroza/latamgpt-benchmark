@@ -1,196 +1,191 @@
 # latamgpt-benchmark
 
-Evaluates [`latam-gpt/CHOCLO`](https://huggingface.co/datasets/latam-gpt/CHOCLO) and [`latam-gpt/Trueque-Benchmark-beta-0.1`](https://huggingface.co/datasets/latam-gpt/Trueque-Benchmark-beta-0.1) against modern language models and logs the full benchmark to W&B Weave.
+Batch-first evaluation pipeline for [`latam-gpt/CHOCLO`](https://huggingface.co/datasets/latam-gpt/CHOCLO) and [`latam-gpt/Trueque-Benchmark-beta-0.1`](https://huggingface.co/datasets/latam-gpt/Trueque-Benchmark-beta-0.1) using only OpenAI and Doubleword.
 
----
+## What Changed
 
-## Table of contents
+- Only two providers remain: `openai` and `doubleword`.
+- Benchmark inference is now asynchronous and batch-based.
+- Judging is a separate second batch stage.
+- The default OpenAI list follows the OpenAI lineage already used in CHOCLO, updated with current replacements where applicable.
+- The default OpenAI list is a conservative current set: `gpt-4.1-mini`, `gpt-5-mini`, `gpt-5-nano`.
+- The default Doubleword list keeps one Qwen and adds Gemma plus GPT-OSS.
 
-- [Auditing the benchmark](#auditing-the-benchmark)
-- [Environment variables](#environment-variables)
-- [Running a benchmark](#running-a-benchmark)
-- [Model suites](#model-suites)
-- [Repository layout](#repository-layout)
-- [Adding a model from an existing provider](#adding-a-model-from-an-existing-provider)
-- [Adding a new provider](#adding-a-new-provider)
-- [Doubleword provider notes](#doubleword-provider-notes)
-- [Weave logging contract](#weave-logging-contract)
-- [Dataset citations](#dataset-citations)
-- [Contributor checklist](#contributor-checklist)
+## Model Selection
 
----
+Source rationale lives in [`docs/model-selection-2026-04-22.md`](docs/model-selection-2026-04-22.md).
 
-## Auditing the benchmark
+Current default suite:
 
-If you want to inspect or reproduce results, these are the files that matter:
+- `openai:gpt-4.1-mini`
+- `openai:gpt-5-mini`
+- `openai:gpt-5-nano`
+- `doubleword:Qwen/Qwen3.5-4B`
+- `doubleword:google/gemma-4-31B-it`
+- `doubleword:openai/gpt-oss-20b`
 
-| What you want to audit | Where to look |
-|---|---|
-| How datasets are loaded and normalized | [`src/latamgpt_benchmark/datasets.py`](src/latamgpt_benchmark/datasets.py) |
-| How the evaluation loop works | [`src/latamgpt_benchmark/evaluator.py`](src/latamgpt_benchmark/evaluator.py) |
-| Deterministic metrics (exact match, etc.) | [`src/latamgpt_benchmark/scoring.py`](src/latamgpt_benchmark/scoring.py) |
-| LLM judge logic and prompts | [`src/latamgpt_benchmark/judge.py`](src/latamgpt_benchmark/judge.py) |
-| Default system prompts and model list | [`src/latamgpt_benchmark/config.py`](src/latamgpt_benchmark/config.py) |
-| Curated model suites | [`src/latamgpt_benchmark/model_suites.py`](src/latamgpt_benchmark/model_suites.py) |
-| Dataset comparison notes | [`docs/dataset-citations-and-comparison.md`](docs/dataset-citations-and-comparison.md) |
-| Model selection rationale (April 2026) | [`docs/model-selection-2026-04-22.md`](docs/model-selection-2026-04-22.md) |
+Default judge model:
 
-Every provider is evaluated through the same shared loop in [`evaluator.py`](src/latamgpt_benchmark/evaluator.py). Each prediction logs dataset row metadata, model output, latency, token usage, deterministic metrics, and judge metrics when enabled. There are no provider-specific evaluation paths.
+- `openai:gpt-4.1-mini`
 
----
+## Environment Variables
 
-## Environment variables
-
-Required for all runs:
+Required for dataset loading and batch submission:
 
 ```env
-WANDB_API_KEY=...
-WEAVE_PROJECT=your-entity/latamgpt-benchmark
-HF_TOKEN=...
+HF_TOKEN=
+OPENAI_API_KEY=
+DOUBLEWORD_API_KEY=
 ```
 
-Provider-specific keys:
+Optional, only if you want Weave logging during answer collection:
 
 ```env
-OPENAI_API_KEY=...
-ANTHROPIC_API_KEY=...
-GEMINI_API_KEY=...
-DOUBLEWORD_API_KEY=...
+WANDB_API_KEY=
+WEAVE_PROJECT=entity/project
 ```
 
-See [`.env.example`](.env.example) for the full template.
+See [`.env.example`](.env.example).
 
----
+## Workflow
 
-## Running a benchmark
+This repo now assumes a two-stage workflow.
+
+### 1. Submit answer batches
 
 ```bash
-# Single model
-uv run latamgpt-benchmark --model anthropic:claude-sonnet-4-20250514
-
-# Full suite
-uv run latamgpt-benchmark --model-suite current-recommended
-
-# Suite plus extra models
-uv run latamgpt-benchmark \
-  --model-suite current-cost-balanced \
-  --model doubleword:Qwen/Qwen3-14B-FP8
+uv run latamgpt-benchmark submit --model-suite benchmark-default
 ```
 
----
+This creates a run directory with:
 
-## Model suites
+- `config.json`
+- `dataset_snapshots/`
+- `batch_inputs/answers/`
+- `batch_manifests/answers/`
+- `answers_batches.json`
 
-Curated suites are defined in [`src/latamgpt_benchmark/model_suites.py`](src/latamgpt_benchmark/model_suites.py). Available names:
+Requests are packed by model and chunked with `--max-requests-per-batch`, so batches are not submitted one row at a time.
 
-| Suite | Use case |
-|---|---|
-| `current-flagships` | Best available models regardless of cost |
-| `current-recommended` | Balanced quality and cost |
-| `current-cost-balanced` | High-volume or budget runs |
+### 2. Wait for answer batches
 
-Selection rationale is documented in [`docs/model-selection-2026-04-22.md`](docs/model-selection-2026-04-22.md).
+Refresh status once:
 
----
-
-## Repository layout
-
+```bash
+uv run latamgpt-benchmark status --run-dir runs/<run-name>
 ```
+
+Or poll until terminal state:
+
+```bash
+uv run latamgpt-benchmark status --run-dir runs/<run-name> --wait --poll-interval-seconds 300
+```
+
+This is the waiting strategy for long jobs: submit once, then use polling with a configurable interval and optional timeout instead of blocking inside the submit step.
+
+### 3. Collect answer batches
+
+```bash
+uv run latamgpt-benchmark collect --run-dir runs/<run-name> --wait
+```
+
+This downloads completed batch outputs and materializes the usual benchmark artifacts:
+
+- `<dataset>__<model>.jsonl`
+- `<dataset>__<model>.summary.json`
+- `run_summary.json`
+
+If `WEAVE_PROJECT` and `WANDB_API_KEY` are present, this step also logs predictions to Weave.
+
+### 4. Submit judge batches
+
+```bash
+uv run latamgpt-judge-only submit --input-run runs/<run-name>
+```
+
+This creates a second run directory, by default:
+
+```text
+runs/<run-name>-judge-openai__gpt-4.1-mini
+```
+
+### 5. Wait for judge batches
+
+```bash
+uv run latamgpt-judge-only status --run-dir runs/<judge-run> --wait --poll-interval-seconds 300
+```
+
+### 6. Collect judge batches
+
+```bash
+uv run latamgpt-judge-only collect --run-dir runs/<judge-run> --wait
+```
+
+This writes judged copies of the answer files plus updated summaries and `run_summary.json`.
+
+## Model Suites
+
+Curated suites are defined in [`src/latamgpt_benchmark/model_suites.py`](src/latamgpt_benchmark/model_suites.py).
+
+Available suites:
+
+- `benchmark-default`
+- `openai-conservative`
+- `doubleword-small`
+- `cost-minimal`
+
+## Repository Layout
+
+```text
 src/latamgpt_benchmark/
-├── datasets.py      # Dataset loading and normalization
-├── models.py        # Provider clients
-├── evaluator.py     # Evaluation loop and Weave logging
-├── scoring.py       # Deterministic metrics
-├── judge.py         # Optional LLM judge
-├── config.py        # Default model list and prompts
-├── model_suites.py  # Curated model suites
-└── cli.py           # CLI entrypoint
-
-docs/
-├── dataset-citations-and-comparison.md
-└── model-selection-2026-04-22.md
+|-- batching.py      # Batch polling and registry helpers
+|-- cli.py           # Answer batch CLI
+|-- config.py        # Defaults and run config
+|-- datasets.py      # Dataset loading and normalization
+|-- evaluator.py     # Answer batch submit/status/collect flow
+|-- judge.py         # Judge prompt and parsing helpers
+|-- judge_only.py    # Judge batch submit/status/collect flow
+|-- model_suites.py  # Saved suites
+|-- models.py        # Provider batch clients
+|-- scoring.py       # Deterministic metrics
+`-- utils.py         # JSON and filesystem helpers
 ```
 
----
+## Provider Notes
 
-## Adding a model from an existing provider
+OpenAI batches use the official Batch API and currently require `completion_window="24h"`.
 
-If the provider already exists in [`models.py`](src/latamgpt_benchmark/models.py), no new code is needed.
+Doubleword batches use the same OpenAI-compatible shape with base URL `https://api.doubleword.ai/v1`. Doubleword supports both `24h` and `1h`, but the default here is `24h` to minimize cost.
 
-The model spec format is:
+## Adding or Changing Models
 
-```
+Model specs still use:
+
+```text
 provider:model-id
 ```
 
-**Option 1 — pass it through the CLI:**
+To add another model from an existing provider:
 
-```bash
-uv run latamgpt-benchmark --model openai:gpt-5.4-mini
-uv run latamgpt-benchmark --model doubleword:Qwen/Qwen3.6-35B-A3B-FP8
-```
+1. Add it to a suite in [`src/latamgpt_benchmark/model_suites.py`](src/latamgpt_benchmark/model_suites.py), or pass it via `--model`.
+2. Keep the provider as either `openai` or `doubleword`.
+3. Update [`docs/model-selection-2026-04-22.md`](docs/model-selection-2026-04-22.md) and this README if the default benchmark set changes.
 
-**Option 2 — add it to `DEFAULT_MODELS` in [`config.py`](src/latamgpt_benchmark/config.py)** if it should run by default.
+## Auditing Outputs
 
-Current providers: OpenAI, Anthropic, Google Gemini, Doubleword.
+If you need to inspect a run end to end:
 
----
+- Dataset loading: [`src/latamgpt_benchmark/datasets.py`](src/latamgpt_benchmark/datasets.py)
+- Answer submission and materialization: [`src/latamgpt_benchmark/evaluator.py`](src/latamgpt_benchmark/evaluator.py)
+- Judge prompt and parser: [`src/latamgpt_benchmark/judge.py`](src/latamgpt_benchmark/judge.py)
+- Judge batch flow: [`src/latamgpt_benchmark/judge_only.py`](src/latamgpt_benchmark/judge_only.py)
+- Metrics: [`src/latamgpt_benchmark/scoring.py`](src/latamgpt_benchmark/scoring.py)
+- Model selection notes: [`docs/model-selection-2026-04-22.md`](docs/model-selection-2026-04-22.md)
+- Dataset comparison notes: [`docs/dataset-citations-and-comparison.md`](docs/dataset-citations-and-comparison.md)
 
-## Adding a new provider
+## Dataset Citations
 
-Provider clients have a single contract:
-
-- **Input:** `system_prompt`, `user_prompt`
-- **Output:** `ModelResponse` (normalized text, token usage, raw model name, response id, finish reason)
-
-Steps:
-
-1. Add the provider name to `ModelSpec.parse()` in [`config.py`](src/latamgpt_benchmark/config.py).
-2. Implement a `BaseModelClient` subclass in [`models.py`](src/latamgpt_benchmark/models.py).
-3. Register it in `build_model_client()` in the same file.
-4. Add the required API key to [`.env.example`](.env.example).
-5. Document one or two recommended model IDs in this README under a new section.
-6. Update tests if parsing or provider selection logic changed.
-
-Do not add a custom evaluation path — all providers share the loop in [`evaluator.py`](src/latamgpt_benchmark/evaluator.py).
-
----
-
-## Doubleword provider notes
-
-Integrated as an OpenAI-compatible provider using the official `openai` Python client:
-
-- Base URL: `https://api.doubleword.ai/v1`
-- API key env var: `DOUBLEWORD_API_KEY`
-
-Recommended model IDs for this benchmark:
-
-| Model ID | Notes |
-|---|---|
-| `Qwen/Qwen3.6-35B-A3B-FP8` | Strong mid-sized reasoning model, good price/performance |
-| `openai/gpt-oss-20b` | Small open-weight baseline, low latency |
-| `Qwen/Qwen3-14B-FP8` | Lighter baseline for high-volume runs |
-
----
-
-## Weave logging contract
-
-Every prediction logged to W&B Weave includes:
-
-- Dataset row metadata
-- Model output
-- Latency
-- Token usage
-- Deterministic metrics
-- Judge metrics (when `--judge` is enabled)
-
-This is handled entirely in [`evaluator.py`](src/latamgpt_benchmark/evaluator.py).
-
----
-
-## Dataset citations
-
-**Trueque:**
+Trueque:
 
 ```bibtex
 @software{Trueque_benchmark_beta_0.1,
@@ -201,7 +196,7 @@ This is handled entirely in [`evaluator.py`](src/latamgpt_benchmark/evaluator.py
 }
 ```
 
-**CHOCLO:**
+CHOCLO:
 
 ```bibtex
 @dataset{choclo2026,
@@ -213,21 +208,10 @@ This is handled entirely in [`evaluator.py`](src/latamgpt_benchmark/evaluator.py
 }
 ```
 
-See [`docs/dataset-citations-and-comparison.md`](docs/dataset-citations-and-comparison.md) for a comparison of both datasets.
+## Contributor Notes
 
----
-
-## Contributor checklist
-
-- Code and comments in English
-- Keep provider integrations simple — satisfy the `BaseModelClient` contract
-- Reuse the shared evaluation loop
-- Add models through `provider:model-id`
-- Update `.env.example` when introducing a new credential
-- Update this README when adding a provider or changing the default suite
-- Run before opening a PR:
-
-```bash
-uv run --extra dev ruff check
-uv run --extra dev pytest
-```
+- Code and comments in English.
+- Keep the pipeline simple and fail loudly when a batch response is malformed.
+- Do not reintroduce per-request synchronous inference paths.
+- Keep answer generation and judging as separate batch stages.
+- I did not run benchmarks, tests, or linters in this change.

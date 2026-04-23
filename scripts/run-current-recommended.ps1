@@ -1,1 +1,1 @@
-uv run latamgpt-benchmark --model-suite current-recommended @args
+uv run latamgpt-benchmark submit --model-suite benchmark-default @args

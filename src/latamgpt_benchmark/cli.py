@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -14,15 +15,68 @@ from latamgpt_benchmark.config import (
     ModelSpec,
 )
 from latamgpt_benchmark.datasets import resolve_datasets
-from latamgpt_benchmark.evaluator import run_benchmark
+from latamgpt_benchmark.evaluator import (
+    collect_answer_batches,
+    refresh_answer_batches,
+    submit_answer_batches,
+)
 from latamgpt_benchmark.model_suites import available_suite_names, resolve_model_list
 from latamgpt_benchmark.utils import utc_timestamp
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Evaluate CHOCLO and Trueque with OpenAI, Anthropic, Gemini, Doubleword, and Weave."
+        description="Submit, track, and collect LATAMGPT benchmark batches with OpenAI and Doubleword."
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    submit_parser = subparsers.add_parser("submit", help="Submit answer-generation batches.")
+    _add_submit_arguments(submit_parser)
+
+    status_parser = subparsers.add_parser("status", help="Refresh and print answer batch status.")
+    _add_tracking_arguments(status_parser)
+
+    collect_parser = subparsers.add_parser(
+        "collect",
+        help="Download completed answer batches and materialize benchmark outputs.",
+    )
+    _add_tracking_arguments(collect_parser)
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    load_dotenv()
+
+    if args.command == "submit":
+        run_dir = submit_answer_batches(_benchmark_config_from_args(args))
+        print(run_dir)
+        return
+
+    run_dir = Path(args.run_dir)
+    if args.command == "status":
+        registry = refresh_answer_batches(
+            run_dir,
+            wait=args.wait,
+            poll_interval_seconds=args.poll_interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+        )
+        from latamgpt_benchmark.batching import format_registry_summary
+
+        print(format_registry_summary(registry))
+        return
+
+    collected = collect_answer_batches(
+        run_dir,
+        wait=args.wait,
+        poll_interval_seconds=args.poll_interval_seconds,
+        timeout_seconds=args.timeout_seconds,
+    )
+    print(collected)
+
+
+def _add_submit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dataset",
         dest="datasets",
@@ -44,16 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
             f"Available: {', '.join(available_suite_names())}."
         ),
     )
-    parser.add_argument(
-        "--judge-model",
-        help="Judge model spec in provider:model-id format. Defaults to openai:gpt-5.4-mini.",
-    )
-    parser.add_argument(
-        "--disable-judge",
-        action="store_true",
-        help="Disable LLM-as-a-judge and keep only deterministic metrics.",
-    )
-    parser.add_argument("--weave-project", help="Weave project in entity/project format.")
+    parser.add_argument("--weave-project", help="Optional Weave project in entity/project format.")
     parser.add_argument("--run-name", help="Optional run name. Defaults to a UTC timestamp.")
     parser.add_argument("--output-dir", default="runs", help="Directory for local outputs.")
     parser.add_argument("--split", default="train", help="Dataset split to evaluate.")
@@ -69,33 +114,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum output tokens for evaluated models.",
     )
     parser.add_argument(
-        "--judge-max-output-tokens",
-        type=int,
-        default=256,
-        help="Maximum output tokens for the judge model.",
-    )
-    parser.add_argument(
         "--temperature",
         type=float,
         default=0.0,
         help="Generation temperature for all providers.",
     )
-    return parser
+    parser.add_argument(
+        "--completion-window",
+        default="24h",
+        choices=["24h", "1h"],
+        help="Batch completion window. OpenAI only supports 24h.",
+    )
+    parser.add_argument(
+        "--max-requests-per-batch",
+        type=int,
+        default=5000,
+        help="Upper bound of requests packed into each submitted batch file.",
+    )
 
 
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-    load_dotenv()
+def _add_tracking_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--run-dir", required=True, help="Run directory created by submit.")
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="Poll until the batches reach a terminal state before returning.",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=int,
+        default=300,
+        help="Polling interval used with --wait.",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        help="Optional timeout used with --wait.",
+    )
 
-    weave_project = args.weave_project
-    if not weave_project:
-        import os
 
-        weave_project = os.getenv("WEAVE_PROJECT")
-    if not weave_project:
-        raise ValueError("Set --weave-project or WEAVE_PROJECT in the environment.")
-
+def _benchmark_config_from_args(args: argparse.Namespace) -> BenchmarkConfig:
+    weave_project = args.weave_project or os.getenv("WEAVE_PROJECT")
     datasets = resolve_datasets(args.datasets or ["all"])
     model_values = resolve_model_list(
         model_names=args.models or DEFAULT_MODELS,
@@ -103,12 +162,8 @@ def main() -> None:
     )
     models = [ModelSpec.parse(value) for value in model_values]
 
-    judge_model = None
-    if not args.disable_judge:
-        judge_value = args.judge_model or DEFAULT_JUDGE_MODEL
-        judge_model = ModelSpec.parse(judge_value)
-
-    config = BenchmarkConfig(
+    judge_model = ModelSpec.parse(DEFAULT_JUDGE_MODEL)
+    return BenchmarkConfig(
         datasets=datasets,
         models=models,
         judge_model=judge_model,
@@ -124,13 +179,9 @@ def main() -> None:
         num_shards=args.num_shards,
         shard_index=args.shard_index,
         max_output_tokens=args.max_output_tokens,
-        judge_max_output_tokens=args.judge_max_output_tokens,
+        judge_max_output_tokens=256,
         temperature=args.temperature,
+        answer_completion_window=args.completion_window,
+        judge_completion_window="24h",
+        max_requests_per_batch=args.max_requests_per_batch,
     )
-
-    run_dir = run_benchmark(config)
-    print(run_dir)
-
-
-if __name__ == "__main__":
-    main()

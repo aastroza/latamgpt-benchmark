@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from latamgpt_benchmark.models import BaseModelClient
-
 
 @dataclass(frozen=True)
 class JudgeResult:
@@ -26,20 +24,17 @@ class JudgeResult:
         }
 
 
-def run_judge(
-    judge_client: BaseModelClient,
-    judge_prompt: str,
-    question: str,
-    reference_answer: str,
-    model_answer: str,
-) -> JudgeResult:
-    prompt = _build_judge_prompt(
-        question=question,
-        reference_answer=reference_answer,
-        model_answer=model_answer,
-    )
-    response = judge_client.generate(system_prompt=judge_prompt, user_prompt=prompt)
-    payload = _parse_json_payload(response.text)
+def build_judge_user_prompt(question: str, reference_answer: str, model_answer: str) -> str:
+    payload = {
+        "question": question,
+        "reference_answer": reference_answer,
+        "model_answer": model_answer,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def parse_judge_result(text: str, usage: dict[str, int | None]) -> JudgeResult:
+    payload = _parse_json_payload(text)
     return JudgeResult(
         correctness_score=float(payload["correctness_score"]),
         completeness_score=float(payload["completeness_score"]),
@@ -47,18 +42,22 @@ def run_judge(
         overall_score=float(payload["overall_score"]),
         verdict=str(payload["verdict"]),
         justification=str(payload["justification"]).strip(),
-        raw_response_text=response.text,
-        usage=response.usage,
+        raw_response_text=text,
+        usage=usage,
     )
 
 
-def _build_judge_prompt(question: str, reference_answer: str, model_answer: str) -> str:
-    payload = {
-        "question": question,
-        "reference_answer": reference_answer,
-        "model_answer": model_answer,
+def judge_payload(judge_result: JudgeResult) -> dict:
+    return {
+        "correctness_score": judge_result.correctness_score,
+        "completeness_score": judge_result.completeness_score,
+        "uncertainty_handling_score": judge_result.uncertainty_handling_score,
+        "overall_score": judge_result.overall_score,
+        "verdict": judge_result.verdict,
+        "justification": judge_result.justification,
+        "raw_response_text": judge_result.raw_response_text,
+        "usage": judge_result.usage,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _parse_json_payload(text: str) -> dict:

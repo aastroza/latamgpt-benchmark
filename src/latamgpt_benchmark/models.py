@@ -1,236 +1,184 @@
 from __future__ import annotations
 
-import asyncio
+import json
 import os
 from dataclasses import dataclass
-from time import perf_counter
+from typing import Any
+from urllib import request
 
-from anthropic import Anthropic
-from autobatcher import BatchOpenAI
-from google import genai
-from google.genai import types as genai_types
 from openai import OpenAI
 
 from latamgpt_benchmark.config import ModelSpec
 
 
+TERMINAL_BATCH_STATUSES = {"completed", "failed", "expired", "cancelled", "cancelling"}
+
+
 @dataclass(frozen=True)
-class ModelResponse:
+class BatchInfo:
+    batch_id: str
+    input_file_id: str
+    status: str
+    output_file_id: str | None
+    error_file_id: str | None
+    request_counts: dict[str, int | None]
+
+
+@dataclass(frozen=True)
+class DownloadedBatchFile:
     text: str
-    latency_seconds: float
-    usage: dict[str, int | None]
-    raw_model_name: str | None
-    response_id: str | None
-    finish_reason: str | None
+    headers: dict[str, str]
 
 
-class BaseModelClient:
-    def __init__(
-        self,
-        spec: ModelSpec,
-        max_output_tokens: int,
-        temperature: float,
-    ) -> None:
-        self.spec = spec
-        self.max_output_tokens = max_output_tokens
-        self.temperature = temperature
-
-    def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
-        raise NotImplementedError
-
-
-class OpenAICompatibleModelClient(BaseModelClient):
-    def __init__(
-        self,
-        spec: ModelSpec,
-        max_output_tokens: int,
-        temperature: float,
-        api_key_env_var: str,
-        base_url: str | None = None,
-    ) -> None:
-        super().__init__(spec, max_output_tokens, temperature)
+class BaseBatchClient:
+    def __init__(self, spec: ModelSpec, api_key_env_var: str, base_url: str | None = None) -> None:
         api_key = os.getenv(api_key_env_var)
         if not api_key:
             raise ValueError(f"{api_key_env_var} is required to use {spec.provider} models.")
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.spec = spec
+        self.api_key = api_key
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.client = OpenAI(api_key=api_key, base_url=self.base_url)
 
-    def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
-        started = perf_counter()
-        response = self.client.chat.completions.create(
-            model=self.spec.model,
-            temperature=self.temperature,
-            max_completion_tokens=self.max_output_tokens,
-            messages=[
+    def build_request_body(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_output_tokens: int,
+        temperature: float,
+    ) -> dict[str, Any]:
+        return {
+            "model": self.spec.model,
+            "temperature": temperature,
+            "max_completion_tokens": max_output_tokens,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+        }
+
+    def upload_batch_file(self, path: str) -> str:
+        with open(path, "rb") as handle:
+            uploaded = self.client.files.create(file=handle, purpose="batch")
+        return uploaded.id
+
+    def create_batch(
+        self,
+        input_file_id: str,
+        completion_window: str,
+        metadata: dict[str, str],
+    ) -> BatchInfo:
+        self.validate_completion_window(completion_window)
+        batch = self.client.batches.create(
+            input_file_id=input_file_id,
+            endpoint="/v1/chat/completions",
+            completion_window=completion_window,
+            metadata=metadata,
         )
-        latency_seconds = perf_counter() - started
-        message = response.choices[0].message
-        usage = response.usage
-        return ModelResponse(
-            text=(message.content or "").strip(),
-            latency_seconds=latency_seconds,
-            usage={
-                "input_tokens": getattr(usage, "prompt_tokens", None),
-                "output_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-            },
-            raw_model_name=getattr(response, "model", None),
-            response_id=getattr(response, "id", None),
-            finish_reason=getattr(response.choices[0], "finish_reason", None),
+        return _batch_info_from_sdk(batch)
+
+    def retrieve_batch(self, batch_id: str) -> BatchInfo:
+        return _batch_info_from_sdk(self.client.batches.retrieve(batch_id))
+
+    def download_output_file(self, file_id: str) -> DownloadedBatchFile:
+        output_url = f"{self.base_url}/files/{file_id}/content"
+        http_request = request.Request(
+            output_url,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            method="GET",
         )
+        with request.urlopen(http_request) as response:
+            payload = response.read().decode("utf-8")
+            headers = {key: value for key, value in response.headers.items()}
+        return DownloadedBatchFile(text=payload, headers=headers)
+
+    def validate_completion_window(self, completion_window: str) -> None:
+        if completion_window != "24h":
+            raise ValueError(
+                f"{self.spec.provider} batches only support completion_window='24h'."
+            )
 
 
-class OpenAIModelClient(OpenAICompatibleModelClient):
-    def __init__(self, spec: ModelSpec, max_output_tokens: int, temperature: float) -> None:
+class OpenAIBatchClient(BaseBatchClient):
+    def __init__(self, spec: ModelSpec) -> None:
+        super().__init__(spec, api_key_env_var="OPENAI_API_KEY")
+
+
+class DoublewordBatchClient(BaseBatchClient):
+    def __init__(self, spec: ModelSpec) -> None:
         super().__init__(
             spec,
-            max_output_tokens=max_output_tokens,
-            temperature=temperature,
-            api_key_env_var="OPENAI_API_KEY",
-        )
-
-
-class DoublewordModelClient(OpenAICompatibleModelClient):
-    def __init__(self, spec: ModelSpec, max_output_tokens: int, temperature: float) -> None:
-        BaseModelClient.__init__(self, spec, max_output_tokens, temperature)
-        api_key = os.getenv("DOUBLEWORD_API_KEY")
-        if not api_key:
-            raise ValueError("DOUBLEWORD_API_KEY is required to use doubleword models.")
-        self.client = BatchOpenAI(
-            api_key=api_key,
+            api_key_env_var="DOUBLEWORD_API_KEY",
             base_url="https://api.doubleword.ai/v1",
-            batch_window_seconds=1.0,
-            poll_interval_seconds=5.0,
-            completion_window="1h",
         )
 
-    def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
-        started = perf_counter()
-        response = asyncio.run(
-            self.client.chat.completions.create(
-                model=self.spec.model,
-                temperature=self.temperature,
-                max_completion_tokens=self.max_output_tokens,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-        )
-        latency_seconds = perf_counter() - started
-        message = response.choices[0].message
-        usage = response.usage
-        return ModelResponse(
-            text=(message.content or "").strip(),
-            latency_seconds=latency_seconds,
-            usage={
-                "input_tokens": getattr(usage, "prompt_tokens", None),
-                "output_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-            },
-            raw_model_name=getattr(response, "model", None),
-            response_id=getattr(response, "id", None),
-            finish_reason=getattr(response.choices[0], "finish_reason", None),
-        )
+    def validate_completion_window(self, completion_window: str) -> None:
+        if completion_window not in {"24h", "1h"}:
+            raise ValueError("doubleword batches support completion_window values '24h' or '1h'.")
 
 
-class AnthropicModelClient(BaseModelClient):
-    def __init__(self, spec: ModelSpec, max_output_tokens: int, temperature: float) -> None:
-        super().__init__(spec, max_output_tokens, temperature)
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY is required to use Anthropic models.")
-        self.client = Anthropic(api_key=api_key)
-
-    def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
-        started = perf_counter()
-        request = {
-            "model": self.spec.model,
-            "system": system_prompt,
-            "max_tokens": self.max_output_tokens,
-            "messages": [{"role": "user", "content": user_prompt}],
-        }
-        if self.temperature != 0.0:
-            request["temperature"] = self.temperature
-        response = self.client.messages.create(**request)
-        latency_seconds = perf_counter() - started
-        text_blocks = [block.text for block in response.content if getattr(block, "type", None) == "text"]
-        usage = response.usage
-        return ModelResponse(
-            text="".join(text_blocks).strip(),
-            latency_seconds=latency_seconds,
-            usage={
-                "input_tokens": getattr(usage, "input_tokens", None),
-                "output_tokens": getattr(usage, "output_tokens", None),
-                "total_tokens": _sum_optional(
-                    getattr(usage, "input_tokens", None),
-                    getattr(usage, "output_tokens", None),
-                ),
-            },
-            raw_model_name=getattr(response, "model", None),
-            response_id=getattr(response, "id", None),
-            finish_reason=getattr(response, "stop_reason", None),
-        )
-
-
-class GeminiModelClient(BaseModelClient):
-    def __init__(self, spec: ModelSpec, max_output_tokens: int, temperature: float) -> None:
-        super().__init__(spec, max_output_tokens, temperature)
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY is required to use Gemini models.")
-        self.client = genai.Client(api_key=api_key)
-
-    def generate(self, system_prompt: str, user_prompt: str) -> ModelResponse:
-        started = perf_counter()
-        response = self.client.models.generate_content(
-            model=self.spec.model,
-            contents=user_prompt,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=self.temperature,
-                max_output_tokens=self.max_output_tokens,
-            ),
-        )
-        latency_seconds = perf_counter() - started
-        usage = getattr(response, "usage_metadata", None)
-        finish_reason = None
-        candidates = getattr(response, "candidates", None) or []
-        if candidates:
-            finish_reason = getattr(candidates[0], "finish_reason", None)
-        return ModelResponse(
-            text=(response.text or "").strip(),
-            latency_seconds=latency_seconds,
-            usage={
-                "input_tokens": getattr(usage, "prompt_token_count", None),
-                "output_tokens": getattr(usage, "candidates_token_count", None),
-                "total_tokens": getattr(usage, "total_token_count", None),
-            },
-            raw_model_name=getattr(response, "model_version", None),
-            response_id=getattr(response, "response_id", None),
-            finish_reason=str(finish_reason) if finish_reason is not None else None,
-        )
-
-
-def build_model_client(
-    spec: ModelSpec,
-    max_output_tokens: int,
-    temperature: float,
-) -> BaseModelClient:
+def build_batch_client(spec: ModelSpec) -> BaseBatchClient:
     if spec.provider == "openai":
-        return OpenAIModelClient(spec, max_output_tokens=max_output_tokens, temperature=temperature)
-    if spec.provider == "anthropic":
-        return AnthropicModelClient(spec, max_output_tokens=max_output_tokens, temperature=temperature)
-    if spec.provider == "gemini":
-        return GeminiModelClient(spec, max_output_tokens=max_output_tokens, temperature=temperature)
+        return OpenAIBatchClient(spec)
     if spec.provider == "doubleword":
-        return DoublewordModelClient(spec, max_output_tokens=max_output_tokens, temperature=temperature)
+        return DoublewordBatchClient(spec)
     raise ValueError(f"Unsupported provider '{spec.provider}'.")
 
 
-def _sum_optional(left: int | None, right: int | None) -> int | None:
-    if left is None or right is None:
-        return None
-    return left + right
+def parse_batch_output_row(row: dict[str, Any]) -> dict[str, Any]:
+    if row.get("error") is not None:
+        raise ValueError(f"Batch request {row.get('custom_id')} failed: {row['error']}")
+    response = row.get("response") or {}
+    status_code = response.get("status_code")
+    if status_code != 200:
+        raise ValueError(
+            f"Batch request {row.get('custom_id')} returned unexpected status code {status_code}."
+        )
+    body = response.get("body") or {}
+    choices = body.get("choices") or []
+    if not choices:
+        raise ValueError(f"Batch request {row.get('custom_id')} did not include any choices.")
+    message = choices[0].get("message") or {}
+    content = message.get("content", "")
+    if isinstance(content, list):
+        text = "".join(_content_part_to_text(part) for part in content).strip()
+    else:
+        text = str(content).strip()
+    usage = body.get("usage") or {}
+    return {
+        "text": text,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        },
+        "raw_model_name": body.get("model"),
+        "response_id": body.get("id"),
+        "finish_reason": choices[0].get("finish_reason"),
+    }
+
+
+def _batch_info_from_sdk(batch: Any) -> BatchInfo:
+    request_counts = getattr(batch, "request_counts", None)
+    return BatchInfo(
+        batch_id=getattr(batch, "id"),
+        input_file_id=getattr(batch, "input_file_id"),
+        status=getattr(batch, "status"),
+        output_file_id=getattr(batch, "output_file_id", None),
+        error_file_id=getattr(batch, "error_file_id", None),
+        request_counts={
+            "total": getattr(request_counts, "total", None),
+            "completed": getattr(request_counts, "completed", None),
+            "failed": getattr(request_counts, "failed", None),
+        },
+    )
+
+
+def _content_part_to_text(part: Any) -> str:
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        if part.get("type") == "text":
+            return str(part.get("text", ""))
+        return json.dumps(part, ensure_ascii=False)
+    return str(part)

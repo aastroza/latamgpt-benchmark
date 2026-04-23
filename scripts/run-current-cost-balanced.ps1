@@ -1,1 +1,1 @@
-uv run latamgpt-benchmark --model-suite current-cost-balanced @args
+uv run latamgpt-benchmark submit --model-suite cost-minimal @args

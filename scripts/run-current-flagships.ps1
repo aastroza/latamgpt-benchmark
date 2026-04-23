@@ -1,1 +1,1 @@
-uv run latamgpt-benchmark --model-suite current-flagships @args
+uv run latamgpt-benchmark submit --model-suite openai-conservative --model-suite doubleword-small @args

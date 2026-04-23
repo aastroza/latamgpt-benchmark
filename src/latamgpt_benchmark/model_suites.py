@@ -12,49 +12,46 @@ class ModelSuite:
 
 
 MODEL_SUITES = {
-    "current-flagships": ModelSuite(
-        name="current-flagships",
-        description="One flagship model per provider for a highest-quality comparison.",
+    "benchmark-default": ModelSuite(
+        name="benchmark-default",
+        description="Conservative small OpenAI set plus one Qwen, Gemma, and GPT-OSS on Doubleword.",
         reviewed_on="2026-04-22",
         models=(
-            "openai:gpt-5.4",
-            "anthropic:claude-opus-4-7",
-            "gemini:gemini-2.5-pro",
-            "doubleword:Qwen/Qwen3.5-397B-A17B-FP8",
-        ),
-    ),
-    "current-recommended": ModelSuite(
-        name="current-recommended",
-        description=(
-            "Curated benchmark suite with flagship, balanced, and lower-cost variants where "
-            "that distinction is clear in the provider documentation."
-        ),
-        reviewed_on="2026-04-22",
-        models=(
-            "openai:gpt-5.4",
-            "openai:gpt-5.4-mini",
-            "openai:gpt-5.4-nano",
-            "anthropic:claude-opus-4-7",
-            "anthropic:claude-sonnet-4-6",
-            "anthropic:claude-haiku-4-5",
-            "gemini:gemini-2.5-pro",
-            "gemini:gemini-2.5-flash",
-            "gemini:gemini-2.5-flash-lite",
-            "doubleword:Qwen/Qwen3.5-397B-A17B-FP8",
-            "doubleword:Qwen/Qwen3.6-35B-A3B-FP8",
+            "openai:gpt-4.1-mini",
+            "openai:gpt-5-mini",
+            "openai:gpt-5-nano",
+            "doubleword:Qwen/Qwen3.5-4B",
             "doubleword:google/gemma-4-31B-it",
             "doubleword:openai/gpt-oss-20b",
         ),
     ),
-    "current-cost-balanced": ModelSuite(
-        name="current-cost-balanced",
-        description="One practical cost-performance model per provider for larger benchmark runs.",
+    "openai-conservative": ModelSuite(
+        name="openai-conservative",
+        description="Current small OpenAI benchmark set without GPT-4o-mini.",
         reviewed_on="2026-04-22",
         models=(
-            "openai:gpt-5.4-mini",
-            "anthropic:claude-sonnet-4-6",
-            "gemini:gemini-2.5-flash",
-            "doubleword:Qwen/Qwen3.6-35B-A3B-FP8",
+            "openai:gpt-4.1-mini",
+            "openai:gpt-5-mini",
+            "openai:gpt-5-nano",
+        ),
+    ),
+    "doubleword-small": ModelSuite(
+        name="doubleword-small",
+        description="One small Qwen plus Gemma and GPT-OSS for inexpensive async benchmarking.",
+        reviewed_on="2026-04-22",
+        models=(
+            "doubleword:Qwen/Qwen3.5-4B",
+            "doubleword:google/gemma-4-31B-it",
+            "doubleword:openai/gpt-oss-20b",
+        ),
+    ),
+    "cost-minimal": ModelSuite(
+        name="cost-minimal",
+        description="Smallest practical pair for cheap smoke runs and pipeline validation.",
+        reviewed_on="2026-04-22",
+        models=(
+            "openai:gpt-4.1-mini",
+            "doubleword:Qwen/Qwen3.5-4B",
         ),
     ),
 }

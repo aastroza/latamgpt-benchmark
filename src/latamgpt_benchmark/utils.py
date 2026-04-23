@@ -20,10 +20,20 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False))
         handle.write("\n")
+
+
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.write_text("", encoding="utf-8")
+    for row in rows:
+        append_jsonl(path, row)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:

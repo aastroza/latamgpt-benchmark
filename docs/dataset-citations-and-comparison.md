@@ -2,25 +2,23 @@
 
 Last reviewed: 2026-04-22
 
-This document records the official citation text exposed on the Hugging Face dataset cards and the closest comparison protocol we can currently run from this repository.
+This document records the official citation text exposed on the Hugging Face dataset cards and clarifies what is and is not directly comparable from this repository.
 
 Sources:
 
 - [Trueque dataset card](https://huggingface.co/datasets/latam-gpt/Trueque-Benchmark-beta-0.1)
 - [CHOCLO dataset card](https://huggingface.co/datasets/latam-gpt/CHOCLO)
 
-## Citation policy for this repository
+## Citation Policy For This Repository
 
-If we publish benchmark results, blog posts, slides, reports, or model cards based on these datasets, we should cite both the dataset cards and use the benchmark names consistently:
+If we publish benchmark results, reports, slides, blog posts, or model cards based on these datasets, we should cite both dataset cards and use the benchmark names consistently:
 
 - Trueque: `Trueque: A human-reviewed collaborative benchmark for Latin American knowledge and culture`
 - CHOCLO: `CHOCLO: Latin American Cultural Knowledge Benchmark`
 
-## Official citations
+## Official Citations
 
 ### Trueque
-
-The dataset card provides this citation:
 
 ```bibtex
 @software{Trueque_benchmark_beta_0.1,
@@ -33,8 +31,6 @@ The dataset card provides this citation:
 
 ### CHOCLO
 
-The dataset card provides this citation:
-
 ```bibtex
 @dataset{choclo2026,
   title={CHOCLO: Latin American Cultural Knowledge Benchmark},
@@ -45,7 +41,7 @@ The dataset card provides this citation:
 }
 ```
 
-## Can we compare against the published results?
+## Can We Compare Against The Published Results?
 
 ### Trueque
 
@@ -56,72 +52,69 @@ What the card says:
 - this is still a beta release
 - baseline results are still pending
 - the evaluation setup is still being adjusted
-- the current baseline model used in automated evaluation experiments is `Qwen2.5-Instruct (72B)`
+- the current automated evaluation baseline is `Qwen2.5-Instruct (72B)`
 
 Implication:
 
-- There are no stable headline benchmark numbers on the card that we can fairly compare against today.
-- The card does not expose enough detail to reproduce the exact current evaluation pipeline from this repository alone.
+- There are no stable published headline numbers to compare against yet.
+- The card does not expose enough detail to reproduce the exact current public evaluation pipeline from this repository alone.
 
 Closest run from this repository today:
 
 ```bash
-uv run latamgpt-benchmark \
-  --dataset trueque \
-  --split train \
-  --disable-judge
+uv run latamgpt-benchmark submit --dataset trueque --model-suite benchmark-default
+uv run latamgpt-benchmark collect --run-dir runs/<run-name> --wait
 ```
 
 Why this is only approximate:
 
-- our judge is not the card's stated `Qwen2.5-Instruct (72B)`
-- the card says the evaluation pipeline is still under revision
-- the dataset card does not publish final baseline scores yet
-
-If we want a closer Trueque comparison later, the next step is to support the exact judge model they mention and mirror their final public evaluation protocol once it is released.
+- our benchmark set is restricted to OpenAI and Doubleword
+- our default judge is `openai:gpt-4.1-mini`, not the card's stated `Qwen2.5-Instruct (72B)`
+- the card says the evaluation setup is still under revision
 
 ### CHOCLO
 
-Partially, but not as an apples-to-apples comparison with the current codebase.
+Partially, but not as an apples-to-apples score comparison.
 
 What the card publishes:
 
-- full-dataset aggregate results
-- model list: `GPT-4o Mini`, `GPT-3.5 Turbo`, `GPT-5 Mini`, `Mistral`, `DeepSeek`
-- a hybrid evaluation framework combining:
-  - lexical similarity
-  - embedding-based semantic similarity
-  - LLM-as-a-judge
-- a final average score computed from those components
+- aggregate results over the benchmark
+- model list including `GPT-4o Mini`, `GPT-3.5 Turbo`, `GPT-5 Mini`, `Mistral`, and `DeepSeek`
+- a hybrid evaluation stack combining lexical similarity, embedding similarity, and LLM judging
 
 Implication:
 
-- We can match the dataset and some of the candidate model IDs.
-- We cannot claim direct comparability until we replicate their exact metric stack, especially the embedding-based semantic score and the specific LLM judge setup.
+- We can align closely to the OpenAI lineage the card references.
+- We still should not claim direct score comparability unless we reproduce the exact original metric stack and judge setup.
 
 Closest run from this repository today for the OpenAI subset:
 
 ```bash
-uv run latamgpt-benchmark \
-  --dataset choclo \
-  --split train \
-  --model openai:gpt-4o-mini \
-  --model openai:gpt-3.5-turbo \
-  --model openai:gpt-5-mini
+uv run latamgpt-benchmark submit --dataset choclo --model-suite openai-conservative
+uv run latamgpt-benchmark collect --run-dir runs/<run-name> --wait
 ```
+
+The practical OpenAI mapping used here is:
+
+- `GPT-3.5 Turbo` -> `openai:gpt-4.1-mini`
+- `GPT-5 Mini` -> `openai:gpt-5-mini`
+
+The model we are no longer carrying in the default OpenAI suite is:
+
+- `GPT-4o Mini`
 
 Important caveat:
 
-- This is only a candidate-model comparison on the same benchmark questions.
-- It is not a faithful reproduction of the published CHOCLO scores.
+- This is a candidate-model comparison on the same benchmark questions.
+- It is not a faithful reproduction of the published CHOCLO aggregate numbers.
 
 Why not:
 
 - our deterministic metrics are `normalized_exact_match`, `token_f1`, and `char_similarity`
 - the card reports lexical, embedding, and LLM judge scores
-- our current judge prompt and judge model are different from the unpublished CHOCLO setup
+- our judge prompt and judge model are not the original unpublished CHOCLO setup
 
-## Recommended wording for future reports
+## Recommended Wording For Future Reports
 
 Use wording like this:
 

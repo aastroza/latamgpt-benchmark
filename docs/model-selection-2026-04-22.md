@@ -2,111 +2,129 @@
 
 Last reviewed: 2026-04-22
 
-This document records the current model suite chosen for the LATAMGPT benchmark and the official sources used to justify it.
+This document records the model choices now encoded in the repository after narrowing the benchmark to OpenAI and Doubleword and moving execution to batch mode.
 
-## Selection principle
+## Selection Principle
 
-The benchmark datasets are general text QA tasks in Spanish and Latin American context. The most useful benchmark set is not just "the single most expensive model" from each provider. It should include:
+The benchmark now follows two simple rules:
 
-- one flagship model
-- one balanced price-performance model
-- one cheaper or higher-throughput model when the provider clearly offers that tier
+- For OpenAI, use a conservative set of current small models and avoid `gpt-4o-mini` in the default suite.
+- For Doubleword, keep one Qwen and add Gemma plus GPT-OSS.
 
-That gives us a better view of the provider frontier, the likely practical default, and the lower-cost baseline.
+## Dataset-Sourced Model Lineage
+
+### CHOCLO
+
+The CHOCLO dataset card explicitly reports results for:
+
+- `GPT-4o Mini`
+- `GPT-3.5 Turbo`
+- `GPT-5 Mini`
+
+It also states that benchmark construction used `GPT-3.5` during the generation pipeline.
+
+Source:
+
+- [CHOCLO dataset card](https://huggingface.co/datasets/latam-gpt/CHOCLO)
+
+### Trueque
+
+The Trueque dataset card does not provide an OpenAI baseline lineup. It only states that the current automated evaluation baseline is `Qwen2.5-Instruct (72B)`.
+
+Source:
+
+- [Trueque dataset card](https://huggingface.co/datasets/latam-gpt/Trueque-Benchmark-beta-0.1)
 
 ## OpenAI
 
-Official source:
+Official source for replacements:
 
-- [OpenAI latest model guide](https://developers.openai.com/api/docs/guides/latest-model)
-- [OpenAI models overview](https://developers.openai.com/api/docs/models)
+- [OpenAI deprecations](https://developers.openai.com/api/docs/deprecations)
 
-Relevant guidance from OpenAI:
+The replacement we use directly from that page is:
 
-- `gpt-5.4` is the default model for most important work
-- `gpt-5.4-mini` is the smaller fast variant
-- `gpt-5.4-nano` is the cheapest high-throughput variant
+- `gpt-3.5-turbo-0125` -> `gpt-4.1-mini`
 
-Selected models:
+The other CHOCLO-linked model we keep directly is:
 
-- `openai:gpt-5.4`
-- `openai:gpt-5.4-mini`
-- `openai:gpt-5.4-nano`
+- `gpt-5-mini`
 
-Why:
+The model we intentionally drop from the default suite is:
 
-- This covers the current flagship plus the two clearly documented smaller tiers.
-- `gpt-5.4-pro` is intentionally excluded from the main suite because it is positioned for unusually hard tasks and would distort benchmark cost materially on large runs.
-
-## Anthropic
-
-Official source:
-
-- [Anthropic models overview](https://platform.claude.com/docs/en/about-claude/models/overview)
-- [Anthropic multilingual support](https://platform.claude.com/docs/en/build-with-claude/multilingual-support)
-
-Relevant guidance from Anthropic:
-
-- `claude-opus-4-7` is the most capable generally available model
-- `claude-sonnet-4-6` is the best speed/intelligence combination
-- `claude-haiku-4-5` is the fastest model
-- Anthropic reports strong multilingual performance, including Spanish close to English-relative performance
-
-Selected models:
-
-- `anthropic:claude-opus-4-7`
-- `anthropic:claude-sonnet-4-6`
-- `anthropic:claude-haiku-4-5`
+- `gpt-4o-mini`
 
 Why:
 
-- Anthropic already exposes a clean flagship / balanced / fastest split in the official table.
+- `gpt-4o-mini` is still active in OpenAI's current models list, but we are choosing a stricter small-model lineup rather than keeping it for historical continuity.
+- `gpt-5-nano` gives us a cheaper current small-model tier.
 
-## Google Gemini
+Selected OpenAI models:
 
-Official source:
-
-- [Gemini models](https://ai.google.dev/gemini-api/docs/models)
-- [Gemini API changelog](https://ai.google.dev/gemini-api/docs/changelog)
-
-Relevant guidance from Google:
-
-- `gemini-2.5-pro` is the most advanced model for complex tasks
-- `gemini-2.5-flash` is the best price-performance model for low-latency reasoning tasks
-- `gemini-2.5-flash-lite` is the fastest and most budget-friendly model in the 2.5 family
-
-Selected models:
-
-- `gemini:gemini-2.5-pro`
-- `gemini:gemini-2.5-flash`
-- `gemini:gemini-2.5-flash-lite`
+- `openai:gpt-4.1-mini`
+- `openai:gpt-5-mini`
+- `openai:gpt-5-nano`
 
 Why:
 
-- This gives the clearest current Gemini ladder for benchmarking quality versus efficiency.
+- `gpt-4.1-mini` is the explicit OpenAI replacement for the deprecated GPT-3.5 Turbo lineage on the deprecations page.
+- `gpt-5-mini` preserves continuity with the CHOCLO-reported lineup while keeping the benchmark on a current smaller GPT-5 variant.
+- `gpt-5-nano` provides the cheapest current OpenAI tier in the benchmark set.
+
+Default judge model:
+
+- `openai:gpt-4.1-mini`
+
+Why:
+
+- It is the cheapest OpenAI choice in the benchmark set with an explicit deprecation-lineage justification.
+- The judge is run in its own second batch, so a smaller judge materially reduces cost.
 
 ## Doubleword
 
-Official source:
+Official sources:
 
 - [Doubleword model catalog](https://docs.doubleword.ai/inference-api/models)
-- [Doubleword models and pricing](https://docs.doubleword.ai/inference-api/model-pricing)
+- [Doubleword model pricing](https://docs.doubleword.ai/inference-api/model-pricing)
 
-Selected models:
+Relevant documented options:
 
-- `doubleword:Qwen/Qwen3.5-397B-A17B`
-- `doubleword:Qwen/Qwen3.6-35B-A3B-FP8`
+- `Qwen/Qwen3.5-4B` is presented as a very small open 4B model for cost-sensitive workloads.
+- `google/gemma-4-31B-it` is listed in the current Doubleword catalog.
+- `openai/gpt-oss-20b` is listed in the current Doubleword catalog as a lower-latency open model.
+
+Selected Doubleword models:
+
+- `doubleword:Qwen/Qwen3.5-4B`
 - `doubleword:google/gemma-4-31B-it`
 - `doubleword:openai/gpt-oss-20b`
 
 Why:
 
-- `Qwen/Qwen3.5-397B-A17B` is described by Doubleword as Qwen's most powerful model and is the best open-weight flagship currently documented there.
-- `Qwen/Qwen3.6-35B-A3B-FP8` is a strong mid-sized reasoning model with a compelling price/performance profile.
-- `google/gemma-4-31B-it` is a strong multilingual open model and explicitly supports 140+ languages.
-- `openai/gpt-oss-20b` is a useful low-latency open-weight baseline.
+- This keeps one genuinely small Qwen in the benchmark.
+- It adds Gemma and GPT-OSS as requested, so Doubleword is no longer all-Qwen.
+- It still avoids the larger 35B and 397B models.
 
-## Saved suites in code
+## Batch Strategy
+
+Official sources:
+
+- [OpenAI Batch guide](https://developers.openai.com/api/docs/guides/batch)
+- [Doubleword batch inference guide](https://docs.doubleword.ai/inference-api/batch-inference)
+- [Doubleword model eval example](https://github.com/doublewordai/use-cases/tree/main/model-evals)
+
+Implementation choices in this repository:
+
+- Answer generation is submitted first as batch requests.
+- Judging is submitted second as a separate batch run over the materialized answer files.
+- Requests are grouped into batch files with many rows each and split only when `max_requests_per_batch` is exceeded.
+- Waiting is handled by explicit polling commands rather than by blocking inside submission.
+
+Completion windows:
+
+- OpenAI: `24h` only.
+- Doubleword: default `24h` in this repo for cost, with optional `1h` support in the CLI.
+
+## Saved Suites In Code
 
 These selections are encoded in:
 
@@ -114,26 +132,27 @@ These selections are encoded in:
 
 Available suites:
 
-- `current-flagships`
-- `current-recommended`
-- `current-cost-balanced`
+- `benchmark-default`
+- `openai-conservative`
+- `doubleword-small`
+- `cost-minimal`
 
-## Example commands
+## Example Commands
 
-Run the main current suite later:
+Submit the default answer batches:
 
 ```bash
-uv run latamgpt-benchmark --model-suite current-recommended
+uv run latamgpt-benchmark submit --model-suite benchmark-default
 ```
 
-Run only the flagship comparison:
+Track them until terminal state:
 
 ```bash
-uv run latamgpt-benchmark --model-suite current-flagships
+uv run latamgpt-benchmark status --run-dir runs/<run-name> --wait
 ```
 
-Run the practical lower-cost suite:
+Then submit the judge stage:
 
 ```bash
-uv run latamgpt-benchmark --model-suite current-cost-balanced
+uv run latamgpt-judge-only submit --input-run runs/<run-name>
 ```
